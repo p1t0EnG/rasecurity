@@ -96,6 +96,17 @@ if (!user) {
     .bucket-card-head strong {
       font-size: 0.95rem;
     }
+    .bucket-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+    /* tombol Copy kecil di dalam card head (selector lebih spesifik dari .btn) */
+    .bucket-card-head .btn {
+      padding: 0.25rem 0.6rem;
+      font-size: 0.75rem;
+    }
     .bucket-values {
       background: var(--surface-2);
       border: 1px solid var(--border);
@@ -179,6 +190,29 @@ if (!user) {
       else statusEl.removeAttribute('data-tone');
     }
 
+    async function copyToClipboard(text: string): Promise<void> {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // Fallback kalau clipboard API ditolak (mis. browser lama / tanpa izin)
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+    }
+
+    // Copy + feedback "Tersalin!" sementara di tombol, lalu balik ke label semula.
+    async function copyWithFeedback(text: string, btn: HTMLButtonElement, label: string): Promise<void> {
+      await copyToClipboard(text);
+      btn.textContent = 'Tersalin!';
+      setTimeout(() => (btn.textContent = label), 1500);
+    }
+
     // .docx = ZIP berisi word/document.xml; tiap <w:p> adalah satu paragraf/baris.
     async function docxToText(buffer: ArrayBuffer): Promise<string> {
       const zip = await JSZip.loadAsync(buffer);
@@ -226,12 +260,26 @@ if (!user) {
         const name = document.createElement('strong');
         name.textContent = BUCKET_LABELS[bucket];
 
+        const actions = document.createElement('div');
+        actions.className = 'bucket-actions';
+
         const badge = document.createElement('span');
         badge.className = 'badge badge-unknown';
         badge.textContent = String(values.length);
 
+        const copyBucketBtn = document.createElement('button');
+        copyBucketBtn.type = 'button';
+        copyBucketBtn.className = 'btn btn-secondary';
+        copyBucketBtn.textContent = 'Copy';
+        copyBucketBtn.title = `Copy ${values.length} ${BUCKET_LABELS[bucket]}`;
+        const bucketText = values.join('\n');
+        copyBucketBtn.addEventListener('click', () => copyWithFeedback(bucketText, copyBucketBtn, 'Copy'));
+
+        actions.appendChild(badge);
+        actions.appendChild(copyBucketBtn);
+
         head.appendChild(name);
-        head.appendChild(badge);
+        head.appendChild(actions);
 
         const list = document.createElement('pre');
         list.className = 'bucket-values';
@@ -285,21 +333,7 @@ if (!user) {
         copyQueryBtn.type = 'button';
         copyQueryBtn.className = 'btn btn-secondary';
         copyQueryBtn.textContent = 'Copy Query';
-        copyQueryBtn.addEventListener('click', async () => {
-          try {
-            await navigator.clipboard.writeText(q.query);
-          } catch {
-            // Fallback kalau clipboard API ditolak (mis. browser lama / tanpa izin)
-            const ta = document.createElement('textarea');
-            ta.value = q.query;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-          }
-          copyQueryBtn.textContent = 'Tersalin!';
-          setTimeout(() => (copyQueryBtn.textContent = 'Copy Query'), 1500);
-        });
+        copyQueryBtn.addEventListener('click', () => copyWithFeedback(q.query, copyQueryBtn, 'Copy Query'));
 
         head.appendChild(info);
         head.appendChild(copyQueryBtn);
@@ -370,7 +404,7 @@ if (!user) {
 
     copyBtn.addEventListener('click', async () => {
       if (!lastResult) return;
-      await navigator.clipboard.writeText(buildExportText(lastResult, lastFileName));
+      await copyToClipboard(buildExportText(lastResult, lastFileName));
       setStatus('Semua IOC disalin ke clipboard', 'success');
     });
 
