@@ -39,10 +39,16 @@ if (!user) {
       <li>
         IOC diproses <mark>bertahap, 5 per batch</mark> secara otomatis (biar tidak kena limit
         server) — tunggu sampai progress di bawah tombol selesai, jangan tutup halaman.
+        Makin banyak IOC makin lama: <mark>{MAX_BULK_ITEMS} IOC bisa beberapa menit</mark>.
       </li>
       <li>
         Verdict <mark>"Unknown"</mark> = salah satu sumber (VirusTotal/OTX/dll) gagal diperiksa,
         <strong>bukan berarti aman</strong>. Ulangi baris itu sebelum menyimpulkan.
+      </li>
+      <li>
+        Kalau mengecek dalam jumlah besar sekaligus, sebagian bisa kena
+        <mark>rate limit provider</mark> (VirusTotal dkk). Kalau itu terjadi, pesan di bawah tombol
+        akan memberi tahu — tunggu sebentar lalu ulangi baris yang gagal dalam jumlah lebih kecil.
       </li>
     </ul>
   </div>
@@ -122,7 +128,18 @@ if (!user) {
       type: IocType | null;
       verdict: Verdict;
       error?: string;
-      providers: { name: string; verdict: Verdict; detail: string }[];
+      providers: { name: string; verdict: Verdict; detail: string; error?: boolean }[];
+    }
+
+    // Baris dianggap "tidak tuntas dinilai" kalau seluruh chunk-nya gagal (error)
+    // atau ada provider yang gagal merespons -- ini yang perlu diulang analyst.
+    function isIncomplete(r: BulkResultItem): boolean {
+      return Boolean(r.error) || r.providers.some((p) => p.error);
+    }
+
+    // Rate limit provider (VirusTotal dkk) muncul sebagai HTTP 429
+    function looksRateLimited(r: BulkResultItem): boolean {
+      return r.providers.some((p) => p.error && p.detail.includes('429'));
     }
 
     const textarea = document.getElementById('bulk-input') as HTMLTextAreaElement;
@@ -196,7 +213,6 @@ if (!user) {
       tbody.innerHTML = '';
       resultsCard.style.display = 'block';
 
-      let hadFailure = false;
       try {
         for (let start = 0; start < items.length; start += CHUNK_SIZE) {
           const chunk = items.slice(start, start + CHUNK_SIZE);
@@ -213,7 +229,6 @@ if (!user) {
 
             if (!res.ok) {
               const data = (await res.json().catch(() => ({}))) as { error?: string };
-              hadFailure = true;
               for (const item of chunk) {
                 lastResults.push({
                   value: item.value,
@@ -229,7 +244,6 @@ if (!user) {
             }
           } catch {
             // Kegagalan jaringan pada satu chunk tidak menghentikan chunk lain
-            hadFailure = true;
             for (const item of chunk) {
               lastResults.push({
                 value: item.value,
@@ -244,10 +258,19 @@ if (!user) {
           renderResults(lastResults);
         }
 
+        const incomplete = lastResults.filter(isIncomplete).length;
+        const rateLimited = lastResults.some(looksRateLimited);
+
         statusEl.textContent =
           `Selesai: ${lastResults.length} IOC diperiksa` +
           (skipped ? `, ${skipped} baris dilewati (format tidak dikenali)` : '') +
-          (hadFailure ? '. Sebagian gagal diperiksa -- lihat kolom Detail, lalu ulangi baris tersebut.' : '');
+          (incomplete > 0
+            ? `. ${incomplete} IOC tidak tuntas dinilai (provider gagal merespons) -- lihat kolom Detail, lalu ulangi baris tersebut.` +
+              (rateLimited
+                ? ' Sebagian kena rate limit provider (429): tunggu sebentar, lalu cek ulang dalam jumlah lebih kecil.'
+                : '')
+            : '');
+        statusEl.setAttribute('data-tone', incomplete > 0 ? 'error' : 'success');
         exportBtn.disabled = lastResults.length === 0;
       } finally {
         submitBtn.disabled = false;

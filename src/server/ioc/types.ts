@@ -12,6 +12,8 @@ export interface ProviderResult {
   error?: boolean;
 }
 
-// Batas jumlah IOC per request bulk checking, biar tidak menghabiskan kuota
-// free-tier VirusTotal/AbuseIPDB/OTX sekali jalan.
-export const MAX_BULK_ITEMS = 50;
+// Batas jumlah IOC per sekali submit di bulk checker. Frontend mengirimnya
+// bertahap per chunk kecil (lihat bulk-checker.astro), jadi batas Cloudflare
+// Workers (~50 subrequest per invocation) bukan lagi penentu angka ini --
+// yang membatasi tinggal kuota/rate limit provider (terutama VirusTotal).
+export const MAX_BULK_ITEMS = 200;
