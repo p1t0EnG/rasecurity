@@ -33,10 +33,59 @@ const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 
 type Bucket = Exclude<keyof ExtractedIocs, 'mode' | 'total'>;
 
-function classifyValue(value: string): { bucket: Bucket; value: string } | null {
+// Nama file (mis. "Laporan_Q3.xls") cocok dengan pola domain karena ekstensinya
+// mirip TLD -- daftar ini mencegahnya salah masuk kategori Domain.
+//
+// PENTING: hanya berisi ekstensi yang BUKAN TLD asli. Ekstensi yang sekaligus TLD
+// sengaja TIDAK dimasukkan -- terutama `.com` (file COM warisan DOS, tapi juga TLD
+// paling umum) dan `.pub`, plus .zip .mov .app .dev .sh .pl .py .md .ai .ps .one
+// .cab .tv -- karena domain phishing seperti "invoice.zip" itu nyata dan tidak boleh
+// ikut terbuang. Untuk kasus itu, konteks sub-judul (lihat SUBHEAD_CONTEXT) yang
+// memutuskan.
+const FILE_EXTENSIONS = new Set([
+  // dokumen & perkantoran
+  'doc', 'docx', 'docm', 'dot', 'dotx', 'xls', 'xlsx', 'xlsm', 'xlsb', 'xlt', 'xltx',
+  'ppt', 'pptx', 'pptm', 'pps', 'ppsx', 'pdf', 'rtf', 'odt', 'ods', 'odp',
+  'csv', 'tsv', 'txt', 'log', 'vsd', 'mpp',
+  // arsip
+  'rar', 'tar', 'gz', 'tgz', 'xz', 'iso', 'img', 'arj', 'lzh', 'ace', 'zipx',
+  // executable / installer / script
+  'exe', 'dll', 'sys', 'msi', 'msix', 'bat', 'cmd', 'vbs', 'vbe', 'js', 'jse',
+  'wsf', 'wsh', 'hta', 'scr', 'pif', 'cpl', 'ocx', 'jar', 'class', 'apk', 'ipa',
+  'dmg', 'deb', 'rpm', 'elf', 'bin', 'lnk', 'chm', 'reg',
+  // web / kode / konfigurasi
+  'html', 'htm', 'php', 'asp', 'aspx', 'jsp', 'jspx', 'cgi', 'css', 'json', 'xml',
+  'yml', 'yaml', 'ini', 'cfg', 'conf', 'sql', 'db', 'sqlite', 'dat', 'tmp', 'bak',
+  // email & kontak
+  'eml', 'msg', 'pst', 'ost', 'vcf', 'ics',
+  // media & gambar
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'ico', 'webp', 'tif', 'tiff',
+  'avi', 'mkv', 'wav', 'flac', 'wmv', 'mpeg', 'mpg', 'webm',
+]);
+
+function fileExtensionOf(value: string): string | null {
+  const idx = value.lastIndexOf('.');
+  if (idx < 1) return null;
+  return value.slice(idx + 1).toLowerCase();
+}
+
+function looksLikeFileName(value: string): boolean {
+  const ext = fileExtensionOf(value);
+  return ext !== null && FILE_EXTENSIONS.has(ext);
+}
+
+// Konteks dari sub-judul di blok IOC. Ini sinyal paling kuat: nilai di bawah
+// "Email attachment/link" pasti nama file/URL, bukan domain -- termasuk untuk
+// ekstensi yang kebetulan juga TLD (mis. "Invoice.zip").
+type SubheadContext = 'hash' | 'network' | 'email' | 'file' | 'subject';
+
+function classifyValue(value: string, context?: SubheadContext): { bucket: Bucket; value: string } | null {
   // Buang tanda baca akhir kalimat yang sering nempel di IOC dalam prosa ("...co." dsb.)
   const v = refang(value).replace(/[.,;:]+$/, '').trim();
   if (!v || /^n\/?a$/i.test(v)) return null;
+
+  // Subject email = teks bebas, jangan pernah ditafsirkan sebagai IOC teknis
+  if (context === 'subject') return { bucket: 'other', value: v };
 
   if (isValidIoc(v, 'hash')) {
     const bucket = v.length === 32 ? 'md5' : v.length === 40 ? 'sha1' : 'sha256';
@@ -45,7 +94,15 @@ function classifyValue(value: string): { bucket: Bucket; value: string } | null 
   if (isValidIoc(v, 'url')) return { bucket: 'url', value: v };
   if (EMAIL_RE.test(v)) return { bucket: 'email', value: v.toLowerCase() };
   if (isValidIoc(v, 'ip')) return { bucket: 'ip', value: v };
-  if (isValidIoc(v, 'domain')) return { bucket: 'domain', value: v.toLowerCase() };
+
+  // Di bawah sub-judul attachment, sisa nilai = nama file (bukan domain)
+  if (context === 'file') return { bucket: 'other', value: v };
+
+  if (isValidIoc(v, 'domain')) {
+    // "Laporan_Q3.xls" -> nama file, bukan domain
+    if (looksLikeFileName(v)) return { bucket: 'other', value: v };
+    return { bucket: 'domain', value: v.toLowerCase() };
+  }
   return { bucket: 'other', value: v };
 }
 
@@ -53,10 +110,26 @@ function classifyValue(value: string): { bucket: Bucket; value: string } | null 
 // dan section berikutnya (Analyst Opinion / Recommendation / Source / Appendix).
 const SECTION_START = /^indicator[s]? of compromise$/i;
 const SECTION_END = /^(analyst opinion|recommendation and controls|source|appendix)$/i;
-const SUBHEADS = new Set([
-  'md5', 'sha-1', 'sha1', 'sha-256', 'sha256', 'domain/ip', 'domain', 'ip',
-  'url', 'email address', 'email subject', 'email attachment/link',
-]);
+// Sub-judul di dalam blok IOC -> konteks yang dipakai classifyValue.
+const SUBHEAD_CONTEXT: Record<string, SubheadContext> = {
+  'md5': 'hash',
+  'sha-1': 'hash',
+  'sha1': 'hash',
+  'sha-256': 'hash',
+  'sha256': 'hash',
+  'domain/ip': 'network',
+  'domain': 'network',
+  'ip': 'network',
+  'url': 'network',
+  'email address': 'email',
+  'email subject': 'subject',
+  'email attachment/link': 'file',
+  'email attachment': 'file',
+  'attachment/link': 'file',
+  'attachment': 'file',
+  'file name': 'file',
+  'filename': 'file',
+};
 
 function emptyResult(mode: ExtractedIocs['mode']): ExtractedIocs {
   return { md5: [], sha1: [], sha256: [], ip: [], domain: [], url: [], email: [], other: [], mode, total: 0 };
@@ -80,20 +153,30 @@ function extractFromSections(text: string): ExtractedIocs {
   const result = emptyResult('section');
   const seen = new Set<string>();
   let inSection = false;
+  let context: SubheadContext | undefined;
 
   for (const rawLine of text.split('\n')) {
     const line = stripBullet(rawLine);
     if (SECTION_START.test(line)) {
       inSection = true;
+      context = undefined;
       continue;
     }
     if (inSection && SECTION_END.test(line)) {
       inSection = false;
+      context = undefined;
       continue;
     }
-    if (!inSection || !line || SUBHEADS.has(line.toLowerCase())) continue;
+    if (!inSection || !line) continue;
 
-    const ioc = classifyValue(line);
+    // Baris sub-judul tidak ikut diekstrak, tapi menentukan konteks baris di bawahnya
+    const subhead = SUBHEAD_CONTEXT[line.toLowerCase()];
+    if (subhead) {
+      context = subhead;
+      continue;
+    }
+
+    const ioc = classifyValue(line, context);
     if (ioc) pushUnique(result, seen, ioc.bucket, ioc.value);
   }
   return result;
